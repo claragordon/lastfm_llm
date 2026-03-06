@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import math
 import os
@@ -31,6 +32,43 @@ from src.data.dataset import (
     collate_next_item_batch,
 )
 from src.model.gpt_decoder import GPTRecConfig, GPTRecModel
+
+
+class _NoOpGradScaler:
+    """Fallback scaler for environments without AMP GradScaler support."""
+
+    def scale(self, loss: torch.Tensor) -> torch.Tensor:
+        return loss
+
+    def unscale_(self, optimizer: torch.optim.Optimizer) -> None:
+        return None
+
+    def step(self, optimizer: torch.optim.Optimizer) -> None:
+        optimizer.step()
+
+    def update(self) -> None:
+        return None
+
+
+def build_grad_scaler(use_amp: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler("cuda", enabled=use_amp)
+        except TypeError:
+            return torch.amp.GradScaler(enabled=use_amp)
+    if hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "GradScaler"):
+        return torch.cuda.amp.GradScaler(enabled=use_amp)
+    return _NoOpGradScaler()
+
+
+def amp_autocast_context(use_amp: bool):
+    if not use_amp:
+        return nullcontext()
+    if hasattr(torch, "autocast"):
+        return torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
+    if hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast"):
+        return torch.cuda.amp.autocast(dtype=torch.float16, enabled=True)
+    return nullcontext()
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,7 +185,7 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     use_amp = device.type == "cuda"
-    scaler = torch.amp.GradScaler(enabled=use_amp)
+    scaler = build_grad_scaler(use_amp=use_amp)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(os.path.abspath(args.output_dir), run_id)
@@ -177,7 +215,7 @@ def main() -> None:
             attention_mask = batch["attention_mask"].to(device)
 
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+            with amp_autocast_context(use_amp=use_amp):
                 logits = model(input_ids=input_ids, attention_mask=attention_mask)
                 loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
