@@ -1,0 +1,13 @@
+{
+  "input_tsv": "/Users/claragordon/RC/lastfm_llm/data/raw/userid-timestamp-artid-artname-traid-traname.tsv",
+  "min_artist_freq": 20,
+  "min_user_events": 20,
+  "max_events_per_user": null,
+  "collapse_consecutive_repeats": false,
+  "keep_most_recent_if_tie": false,
+  "chunksize": 1000000,
+  "num_users": 983,
+  "num_items_including_pad": 35433,
+  "total_events": 18138849,
+  "avg_seq_len": 18452.542217700917
+}
