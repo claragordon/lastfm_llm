@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+
+# Training artifacts
+outputs/
+
+# Local datasets and generated preprocessing outputs
+data/lastfm-dataset-1K/
+data/raw/
+data/processed/
+
