@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+import importlib
 import json
 import math
 import os
@@ -32,6 +33,12 @@ from src.data.dataset import (
     collate_next_item_batch,
 )
 from src.model.gpt_decoder import GPTRecConfig, GPTRecModel
+
+try:
+    tqdm = importlib.import_module("tqdm.auto").tqdm
+except ModuleNotFoundError:
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
 
 
 class _NoOpGradScaler:
@@ -204,7 +211,13 @@ def main() -> None:
         model.train()
         total_loss = 0.0
 
-        for batch in train_dl:
+        train_bar = tqdm(
+            train_dl,
+            desc=f"epoch {epoch:02d}/{args.epochs:02d}",
+            total=len(train_dl),
+            leave=False,
+        )
+        for batch in train_bar:
             global_step += 1
             lr_t = get_lr(global_step, total_steps, args.lr, args.warmup_steps)
             for param_group in optimizer.param_groups:
@@ -229,6 +242,7 @@ def main() -> None:
             scaler.update()
 
             total_loss += float(loss.item())
+            train_bar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{lr_t:.2e}")
 
         avg_loss = total_loss / max(1, len(train_dl))
         metrics = evaluate_next_item(model=model, eval_samples=eval_samples, device=device, k=args.eval_k)
