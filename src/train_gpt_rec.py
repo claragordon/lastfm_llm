@@ -6,6 +6,7 @@ import json
 import math
 import os
 import random
+import sys
 from dataclasses import asdict
 from datetime import datetime
 from functools import partial
@@ -14,6 +15,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+
+# Allow running as either:
+# 1) python -m src.train_gpt_rec
+# 2) python src/train_gpt_rec.py
+if __package__ in (None, ""):
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
 
 from src.data.dataset import (
     TrainChunkDataset,
