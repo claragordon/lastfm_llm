@@ -11,5 +11,4 @@ outputs/
 # Local datasets and generated preprocessing outputs
 data/lastfm-dataset-1K/
 data/raw/
-data/processed/
 
