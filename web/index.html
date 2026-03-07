@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Last.fm GPT Recommender</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Last.fm Realtime Predictor</h1>
+      <p class="subtitle">Search artist IDs, build a history, and run live next-item prediction.</p>
+
+      <section class="panel">
+        <label for="artist-search">Search artist id</label>
+        <input id="artist-search" type="text" placeholder="Type to search artist ids..." autocomplete="off" />
+        <div id="search-results" class="results"></div>
+
+        <div class="row">
+          <label for="top-k">Top K</label>
+          <input id="top-k" type="number" min="1" max="100" value="10" />
+          <button id="predict-btn">Predict Next Artist</button>
+          <button id="clear-btn" class="secondary">Clear History</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Selected History</h2>
+        <div id="history-chips" class="chips"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Predictions</h2>
+        <div id="unknown-warning" class="warning"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Artist ID</th>
+              <th>Token</th>
+              <th>Probability</th>
+              <th>Logit</th>
+            </tr>
+          </thead>
+          <tbody id="predictions-body"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
