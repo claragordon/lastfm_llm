@@ -16,10 +16,11 @@ function renderHistory() {
     historyEl.innerHTML = '<span class="chip">No artists selected yet</span>';
     return;
   }
-  selectedArtists.forEach((artistId, idx) => {
+  selectedArtists.forEach((artist, idx) => {
     const chip = document.createElement('button');
     chip.className = 'chip';
-    chip.textContent = `${idx + 1}. ${artistId} ×`;
+    chip.textContent = `${idx + 1}. ${artist.artist_name} ×`;
+    chip.title = artist.artist_id;
     chip.onclick = () => {
       selectedArtists.splice(idx, 1);
       renderHistory();
@@ -36,9 +37,9 @@ function renderSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement('div');
     row.className = 'result-item';
-    row.textContent = `${item.artist_id}  (token ${item.token_id})`;
+    row.textContent = `${item.artist_name}  (${item.artist_id})`;
     row.onclick = () => {
-      selectedArtists.push(item.artist_id);
+      selectedArtists.push({ artist_id: item.artist_id, artist_name: item.artist_name });
       searchInput.value = '';
       resultsEl.innerHTML = '';
       renderHistory();
@@ -76,7 +77,7 @@ predictBtn.addEventListener('click', async () => {
 
   const topK = Number(topKInput.value || 10);
   const payload = {
-    history_artist_ids: selectedArtists,
+    history_artist_ids: selectedArtists.map((a) => a.artist_id),
     top_k: topK,
   };
 
@@ -96,11 +97,19 @@ predictBtn.addEventListener('click', async () => {
     unknownWarning.textContent = `Ignored unknown ids: ${data.unknown_artist_ids.join(', ')}`;
   }
 
+  if (data.history_used_artist_ids && data.history_used_artist_names) {
+    selectedArtists = data.history_used_artist_ids.map((artistId, i) => ({
+      artist_id: artistId,
+      artist_name: data.history_used_artist_names[i] || artistId,
+    }));
+    renderHistory();
+  }
+
   data.predictions.forEach((p, idx) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${idx + 1}</td>
-      <td>${p.artist_id}</td>
+      <td>${p.artist_name}<br><small>${p.artist_id}</small></td>
       <td>${p.token_id}</td>
       <td>${p.prob.toFixed(6)}</td>
       <td>${p.logit.toFixed(4)}</td>

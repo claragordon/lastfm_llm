@@ -37,6 +37,7 @@ class ModelServer:
         self.data_dir = os.path.abspath(data_dir)
         self.device = torch.device(device)
         self.vocab, self.token_to_artist = self._load_vocab(self.data_dir)
+        self.artist_names = self._load_artist_names(self.data_dir)
         self.artist_ids = sorted(self.vocab.keys())
         self.model, self.model_cfg = self._load_model(checkpoint_path, self.device)
 
@@ -60,6 +61,22 @@ class ModelServer:
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
         return model, cfg
+
+    def _load_artist_names(self, data_dir: str) -> dict[str, str]:
+        candidates = [
+            os.path.join(data_dir, "artist_names.json"),
+            os.path.join(data_dir, "artist_names.jason"),  # tolerate legacy typo
+        ]
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            return {str(artist_id): str(name) for artist_id, name in raw.items()}
+        return {}
+
+    def _artist_name(self, artist_id: str) -> str:
+        return self.artist_names.get(artist_id, artist_id)
 
     @torch.no_grad()
     def predict(self, history_artist_ids: list[str], top_k: int) -> dict[str, Any]:
@@ -88,6 +105,7 @@ class ModelServer:
             predictions.append(
                 {
                     "artist_id": artist_id,
+                    "artist_name": self._artist_name(artist_id),
                     "token_id": int(token),
                     "logit": float(score),
                     "prob": float(probs[token].item()),
@@ -95,8 +113,10 @@ class ModelServer:
             )
 
         used_artist_ids = [self.token_to_artist[t] for t in known_tokens if t in self.token_to_artist]
+        used_artist_names = [self._artist_name(artist_id) for artist_id in used_artist_ids]
         return {
             "history_used_artist_ids": used_artist_ids,
+            "history_used_artist_names": used_artist_names,
             "unknown_artist_ids": unknown_artist_ids,
             "top_k": k,
             "predictions": predictions,
@@ -107,11 +127,26 @@ class ModelServer:
         if not q:
             candidates = self.artist_ids[:limit]
         else:
-            starts = [a for a in self.artist_ids if a.lower().startswith(q)]
-            contains = [a for a in self.artist_ids if q in a.lower() and not a.lower().startswith(q)]
+            starts = [
+                a
+                for a in self.artist_ids
+                if a.lower().startswith(q) or self._artist_name(a).lower().startswith(q)
+            ]
+            contains = [
+                a
+                for a in self.artist_ids
+                if (
+                    q in a.lower() or q in self._artist_name(a).lower()
+                ) and (
+                    not a.lower().startswith(q) and not self._artist_name(a).lower().startswith(q)
+                )
+            ]
             candidates = (starts + contains)[:limit]
 
-        return [{"artist_id": a, "token_id": int(self.vocab[a])} for a in candidates]
+        return [
+            {"artist_id": a, "artist_name": self._artist_name(a), "token_id": int(self.vocab[a])}
+            for a in candidates
+        ]
 
 
 def find_latest_checkpoint(outputs_dir: str) -> str | None:
