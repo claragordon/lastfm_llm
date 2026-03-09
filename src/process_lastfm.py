@@ -84,39 +84,43 @@ def collapse_repeats(seq: List[int]) -> List[int]:
 def iter_chunks(cfg: Config) -> Iterable[pd.DataFrame]:
     # Original TSV columns:
     # 0 user, 1 timestamp, 2 artist_id, 3 artist_name, 4 track_id, 5 track_name
-    cols = ["user", "ts", "artist"]
+    cols = ["user", "ts", "artist", "artist_name"]
     # ts is ISO 8601 like 2009-04-08T01:57:47Z
     return pd.read_csv(
         cfg.input_tsv,
         sep="\t",
         header=None,
-        usecols=[0, 1, 2],
+        usecols=[0, 1, 2, 3],
         names=cols,
-        dtype={"user": "string", "ts": "string", "artist": "string"},
+        dtype={"user": "string", "ts": "string", "artist": "string", "artist_name": "string"},
         chunksize=cfg.chunksize,
         encoding_errors="ignore",
         on_bad_lines="skip",
     )
 
 
-def first_pass_counts(cfg: Config) -> Tuple[Dict[str, int], Dict[str, int]]:
+def first_pass_counts(cfg: Config) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, str]]:
     """Count artist freq and user event counts without loading full dataset."""
     artist_counts: defaultdict[str, int] = defaultdict(int)
     user_counts: defaultdict[str, int] = defaultdict(int)
+    artist_names: dict[str, str] = {}
 
     for i, chunk in enumerate(iter_chunks(cfg), start=1):
         # drop obvious nulls
-        chunk = chunk.dropna(subset=["user", "ts", "artist"])
+        chunk = chunk.dropna(subset=["user", "ts", "artist", "artist_name"])
         # update counts
         for a, c in chunk["artist"].value_counts().items():
             artist_counts[str(a)] += int(c)
         for u, c in chunk["user"].value_counts().items():
             user_counts[str(u)] += int(c)
+        pairs = (chunk[["artist", "artist_name"]].dropna().drop_duplicates(subset=["artist"], keep="first"))
+        artist_names.update(dict(zip(pairs["artist"].astype(str), pairs["artist_name"].astype(str), strict=False)))
+        
 
         if i % 10 == 0:
             print(f"[pass1] processed ~{i*cfg.chunksize:,} rows")
 
-    return artist_counts, user_counts
+    return artist_counts, user_counts, artist_names
 
 
 def second_pass_collect(cfg: Config, valid_artists: set[str], valid_users: set[str]) -> pd.DataFrame:
@@ -228,10 +232,11 @@ def main() -> None:
     os.makedirs(cfg.out_dir, exist_ok=True)
 
     print("[info] pass 1: counting artists/users")
-    artist_counts, user_counts = first_pass_counts(cfg)
+    artist_counts, user_counts, artist_names = first_pass_counts(cfg)
 
     valid_artists = {a for a, c in artist_counts.items() if c >= cfg.min_artist_freq}
     valid_users = {u for u, c in user_counts.items() if c >= cfg.min_user_events}
+    valid_artist_names = {u: n for u, n in artist_names.items() if u in valid_artists}
 
     print(f"[info] artists total={len(artist_counts):,}, valid={len(valid_artists):,} (min_freq={cfg.min_artist_freq})")
     print(f"[info] users total={len(user_counts):,}, valid={len(valid_users):,} (min_events={cfg.min_user_events})")
@@ -281,6 +286,9 @@ def main() -> None:
 
     with open(os.path.join(cfg.out_dir, "artist_vocab.json"), "w", encoding="utf-8") as f:
         json.dump(vocab, f)
+
+    with open(os.path.join(cfg.out_dir, "artist_names.jason"), "w", encoding="utf-8") as f:
+        json.dump(artist_names, f)
 
     write_jsonl(
         os.path.join(cfg.out_dir, "sequences_train.jsonl"),
