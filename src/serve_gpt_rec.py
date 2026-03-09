@@ -63,17 +63,12 @@ class ModelServer:
         return model, cfg
 
     def _load_artist_names(self, data_dir: str) -> dict[str, str]:
-        candidates = [
-            os.path.join(data_dir, "artist_names.json"),
-            os.path.join(data_dir, "artist_names.jason"),  # tolerate legacy typo
-        ]
-        for path in candidates:
-            if not os.path.exists(path):
-                continue
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
+        path = os.path.join(data_dir, "artist_names.json"),
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
             return {str(artist_id): str(name) for artist_id, name in raw.items()}
-        return {}
 
     def _artist_name(self, artist_id: str) -> str:
         return self.artist_names.get(artist_id, artist_id)
