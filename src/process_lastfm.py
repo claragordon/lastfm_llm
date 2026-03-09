@@ -287,8 +287,8 @@ def main() -> None:
     with open(os.path.join(cfg.out_dir, "artist_vocab.json"), "w", encoding="utf-8") as f:
         json.dump(vocab, f)
 
-    with open(os.path.join(cfg.out_dir, "artist_names.jason"), "w", encoding="utf-8") as f:
-        json.dump(artist_names, f)
+    with open(os.path.join(cfg.out_dir, "artist_names.json"), "w", encoding="utf-8") as f:
+        json.dump(valid_artist_names, f)
 
     write_jsonl(
         os.path.join(cfg.out_dir, "sequences_train.jsonl"),

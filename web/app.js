@@ -20,7 +20,6 @@ function renderHistory() {
     const chip = document.createElement('button');
     chip.className = 'chip';
     chip.textContent = `${idx + 1}. ${artist.artist_name} ×`;
-    chip.title = artist.artist_id;
     chip.onclick = () => {
       selectedArtists.splice(idx, 1);
       renderHistory();
@@ -37,7 +36,7 @@ function renderSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement('div');
     row.className = 'result-item';
-    row.textContent = `${item.artist_name}  (${item.artist_id})`;
+    row.textContent = `${item.artist_name}`;
     row.onclick = () => {
       selectedArtists.push({ artist_id: item.artist_id, artist_name: item.artist_name });
       searchInput.value = '';
@@ -94,7 +93,7 @@ predictBtn.addEventListener('click', async () => {
   }
 
   if (data.unknown_artist_ids && data.unknown_artist_ids.length > 0) {
-    unknownWarning.textContent = `Ignored unknown ids: ${data.unknown_artist_ids.join(', ')}`;
+    unknownWarning.textContent = 'Some unrecognized artists were ignored.';
   }
 
   if (data.history_used_artist_ids && data.history_used_artist_names) {
@@ -109,7 +108,7 @@ predictBtn.addEventListener('click', async () => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${idx + 1}</td>
-      <td>${p.artist_name}<br><small>${p.artist_id}</small></td>
+      <td>${p.artist_name}</td>
       <td>${p.token_id}</td>
       <td>${p.prob.toFixed(6)}</td>
       <td>${p.logit.toFixed(4)}</td>
