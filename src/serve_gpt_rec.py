@@ -6,6 +6,9 @@ import glob
 import json
 import os
 import sys
+import time
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from typing import Any
 
@@ -38,6 +41,8 @@ class ModelServer:
         self.device = torch.device(device)
         self.vocab, self.token_to_artist = self._load_vocab(self.data_dir)
         self.artist_names = self._load_artist_names(self.data_dir)
+        self.artist_images = self._load_artist_images(self.data_dir)
+        self._musicbrainz_last_request_ts = 0.0
         self.artist_ids = sorted(self.vocab.keys())
         self.model, self.model_cfg = self._load_model(checkpoint_path, self.device)
 
@@ -73,6 +78,113 @@ class ModelServer:
     def _artist_name(self, artist_id: str) -> str:
         return self.artist_names.get(artist_id, artist_id)
 
+    def _load_artist_images(self, data_dir: str) -> dict[str, str | None]:
+        path = os.path.join(data_dir, "artist_images.json")
+        if not os.path.exists(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return {str(artist_id): (str(url) if url else None) for artist_id, url in raw.items()}
+
+    def _save_artist_images(self) -> None:
+        path = os.path.join(self.data_dir, "artist_images.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.artist_images, f)
+
+    def _fetch_json(self, url: str) -> dict[str, Any]:
+        now = time.time()
+        delta = now - self._musicbrainz_last_request_ts
+        if delta < 1.0:
+            time.sleep(1.0 - delta)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "lastfm-llm/0.1 (local demo app)",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            self._musicbrainz_last_request_ts = time.time()
+            payload = resp.read().decode("utf-8")
+        return json.loads(payload)
+
+    def _extract_image_url_from_musicbrainz_artist(self, artist_payload: dict[str, Any]) -> str | None:
+        relations = artist_payload.get("relations", [])
+        for rel in relations:
+            rel_type = str(rel.get("type", "")).lower()
+            url_info = rel.get("url", {})
+            resource = url_info.get("resource")
+            if rel_type == "image" and isinstance(resource, str):
+                return resource
+
+        wikidata_url = None
+        for rel in relations:
+            rel_type = str(rel.get("type", "")).lower()
+            url_info = rel.get("url", {})
+            resource = url_info.get("resource")
+            if rel_type == "wikidata" and isinstance(resource, str):
+                wikidata_url = resource
+                break
+        if wikidata_url is None:
+            return None
+
+        qid = wikidata_url.rstrip("/").split("/")[-1]
+        if not qid:
+            return None
+        wikidata_api = (
+            "https://www.wikidata.org/w/api.php?action=wbgetentities&ids="
+            f"{urllib.parse.quote(qid)}&props=claims&format=json"
+        )
+        wikidata_payload = self._fetch_json(wikidata_api)
+        entities = wikidata_payload.get("entities", {})
+        entity = entities.get(qid, {})
+        claims = entity.get("claims", {})
+        image_claims = claims.get("P18", [])
+        if not image_claims:
+            return None
+        filename = (
+            image_claims[0]
+            .get("mainsnak", {})
+            .get("datavalue", {})
+            .get("value")
+        )
+        if not isinstance(filename, str) or not filename:
+            return None
+        return f"https://commons.wikimedia.org/wiki/Special:FilePath/{urllib.parse.quote(filename)}"
+
+    def _fetch_artist_image_from_musicbrainz(self, artist_name: str) -> str | None:
+        artist_name = artist_name.strip()
+        if not artist_name:
+            return None
+        search_url = (
+            "https://musicbrainz.org/ws/2/artist/?query=artist:"
+            f"{urllib.parse.quote(artist_name)}&fmt=json&limit=1"
+        )
+        search_payload = self._fetch_json(search_url)
+        artists = search_payload.get("artists", [])
+        if not artists:
+            return None
+        mbid = artists[0].get("id")
+        if not isinstance(mbid, str) or not mbid:
+            return None
+        detail_url = f"https://musicbrainz.org/ws/2/artist/{urllib.parse.quote(mbid)}?inc=url-rels&fmt=json"
+        detail_payload = self._fetch_json(detail_url)
+        return self._extract_image_url_from_musicbrainz_artist(detail_payload)
+
+    def _artist_image_url(self, artist_id: str, lazy: bool = True) -> str | None:
+        if artist_id in self.artist_images:
+            return self.artist_images[artist_id]
+        if not lazy:
+            return None
+        artist_name = self._artist_name(artist_id)
+        try:
+            image_url = self._fetch_artist_image_from_musicbrainz(artist_name)
+        except Exception:
+            image_url = None
+        self.artist_images[artist_id] = image_url
+        self._save_artist_images()
+        return image_url
+
     @torch.no_grad()
     def predict(self, history_artist_ids: list[str], top_k: int) -> dict[str, Any]:
         known_tokens = [self.vocab[a] for a in history_artist_ids if a in self.vocab]
@@ -90,6 +202,9 @@ class ModelServer:
         logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
         next_logits = logits[0, -1].clone()
         next_logits[0] = float("-inf")  # never recommend PAD
+        # Avoid echoing artists that are already in the user's provided history.
+        seen_token_ids = sorted(set(known_tokens))
+        next_logits[seen_token_ids] = float("-inf")
         k = min(top_k, next_logits.shape[-1])
         top_scores, top_tokens = torch.topk(next_logits, k=k)
 
@@ -101,6 +216,7 @@ class ModelServer:
                 {
                     "artist_id": artist_id,
                     "artist_name": self._artist_name(artist_id),
+                    "artist_image_url": self._artist_image_url(artist_id, lazy=True),
                     "token_id": int(token),
                     "logit": float(score),
                     "prob": float(probs[token].item()),
@@ -109,9 +225,11 @@ class ModelServer:
 
         used_artist_ids = [self.token_to_artist[t] for t in known_tokens if t in self.token_to_artist]
         used_artist_names = [self._artist_name(artist_id) for artist_id in used_artist_ids]
+        used_artist_images = [self._artist_image_url(artist_id, lazy=True) for artist_id in used_artist_ids]
         return {
             "history_used_artist_ids": used_artist_ids,
             "history_used_artist_names": used_artist_names,
+            "history_used_artist_images": used_artist_images,
             "unknown_artist_ids": unknown_artist_ids,
             "top_k": k,
             "predictions": predictions,
@@ -139,7 +257,12 @@ class ModelServer:
             candidates = (starts + contains)[:limit]
 
         return [
-            {"artist_id": a, "artist_name": self._artist_name(a), "token_id": int(self.vocab[a])}
+            {
+                "artist_id": a,
+                "artist_name": self._artist_name(a),
+                "artist_image_url": self._artist_image_url(a, lazy=False),
+                "token_id": int(self.vocab[a]),
+            }
             for a in candidates
         ]
 
@@ -185,6 +308,16 @@ def build_app(server: ModelServer, web_dir: str) -> FastAPI:
     @app.post("/predict")
     def predict(req: PredictRequest) -> dict[str, Any]:
         return server.predict(history_artist_ids=req.history_artist_ids, top_k=req.top_k)
+
+    @app.get("/artist_media")
+    def artist_media(artist_id: str = Query(..., description="Artist id")) -> dict[str, Any]:
+        if artist_id not in server.vocab:
+            raise HTTPException(status_code=404, detail="artist_id not found")
+        return {
+            "artist_id": artist_id,
+            "artist_name": server._artist_name(artist_id),
+            "artist_image_url": server._artist_image_url(artist_id, lazy=True),
+        }
 
     if os.path.isdir(web_dir):
         app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")

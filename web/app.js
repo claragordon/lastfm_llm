@@ -9,6 +9,38 @@ const unknownWarning = document.getElementById('unknown-warning');
 
 let selectedArtists = [];
 let searchDebounce = null;
+const imageCache = new Map();
+const imageInFlight = new Set();
+
+function avatarHtml(url, label) {
+  if (url) {
+    return `<img class="artist-avatar" src="${url}" alt="${label}" loading="lazy" />`;
+  }
+  return '<span class="artist-avatar artist-avatar--placeholder"></span>';
+}
+
+async function ensureArtistImage(artistId) {
+  if (!artistId || imageInFlight.has(artistId)) return;
+  if (imageCache.has(artistId) && imageCache.get(artistId) !== undefined) return;
+
+  imageInFlight.add(artistId);
+  try {
+    const res = await fetch(`/artist_media?artist_id=${encodeURIComponent(artistId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    imageCache.set(artistId, data.artist_image_url || null);
+    selectedArtists = selectedArtists.map((a) => (
+      a.artist_id === artistId
+        ? { ...a, artist_image_url: data.artist_image_url || null }
+        : a
+    ));
+    renderHistory();
+  } catch (err) {
+    console.error(err);
+  } finally {
+    imageInFlight.delete(artistId);
+  }
+}
 
 function renderHistory() {
   historyEl.innerHTML = '';
@@ -19,12 +51,16 @@ function renderHistory() {
   selectedArtists.forEach((artist, idx) => {
     const chip = document.createElement('button');
     chip.className = 'chip';
-    chip.textContent = `${idx + 1}. ${artist.artist_name} ×`;
+    const imageUrl = artist.artist_image_url ?? imageCache.get(artist.artist_id) ?? null;
+    chip.innerHTML = `${avatarHtml(imageUrl, artist.artist_name)}<span>${idx + 1}. ${artist.artist_name} ×</span>`;
     chip.onclick = () => {
       selectedArtists.splice(idx, 1);
       renderHistory();
     };
     historyEl.appendChild(chip);
+    if (!imageUrl) {
+      ensureArtistImage(artist.artist_id);
+    }
   });
 }
 
@@ -36,9 +72,17 @@ function renderSearchResults(items) {
   items.forEach((item) => {
     const row = document.createElement('div');
     row.className = 'result-item';
-    row.textContent = `${item.artist_name}`;
+    const imageUrl = item.artist_image_url ?? imageCache.get(item.artist_id) ?? null;
+    if (item.artist_image_url !== undefined) {
+      imageCache.set(item.artist_id, item.artist_image_url);
+    }
+    row.innerHTML = `${avatarHtml(imageUrl, item.artist_name)}<span>${item.artist_name}</span>`;
     row.onclick = () => {
-      selectedArtists.push({ artist_id: item.artist_id, artist_name: item.artist_name });
+      selectedArtists.push({
+        artist_id: item.artist_id,
+        artist_name: item.artist_name,
+        artist_image_url: imageUrl,
+      });
       searchInput.value = '';
       resultsEl.innerHTML = '';
       renderHistory();
@@ -100,16 +144,25 @@ predictBtn.addEventListener('click', async () => {
     selectedArtists = data.history_used_artist_ids.map((artistId, i) => ({
       artist_id: artistId,
       artist_name: data.history_used_artist_names[i] || artistId,
+      artist_image_url: (data.history_used_artist_images || [])[i] || null,
     }));
+    selectedArtists.forEach((artist) => {
+      if (artist.artist_image_url !== undefined) {
+        imageCache.set(artist.artist_id, artist.artist_image_url);
+      }
+    });
     renderHistory();
   }
 
   data.predictions.forEach((p, idx) => {
     const tr = document.createElement('tr');
+    const imageUrl = p.artist_image_url ?? imageCache.get(p.artist_id) ?? null;
+    if (p.artist_image_url !== undefined) {
+      imageCache.set(p.artist_id, p.artist_image_url);
+    }
     tr.innerHTML = `
       <td>${idx + 1}</td>
-      <td>${p.artist_name}</td>
-      <td>${p.token_id}</td>
+      <td><span class="artist-cell">${avatarHtml(imageUrl, p.artist_name)}<span>${p.artist_name}</span></span></td>
       <td>${p.prob.toFixed(6)}</td>
       <td>${p.logit.toFixed(4)}</td>
     `;

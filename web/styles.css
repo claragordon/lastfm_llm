@@ -57,6 +57,9 @@ input {
   padding: 8px 10px;
   cursor: pointer;
   border-bottom: 1px solid #2a3344;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .result-item:hover {
@@ -95,6 +98,29 @@ button.secondary {
   padding: 6px 10px;
   border-radius: 999px;
   font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.artist-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid #2a3344;
+}
+
+.artist-avatar--placeholder {
+  background: #303a4c;
+  display: inline-block;
+}
+
+.artist-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .warning {
