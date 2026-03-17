@@ -5,6 +5,7 @@ import argparse
 import glob
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.parse
@@ -16,8 +17,14 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+try:
+    import certifi
+except ModuleNotFoundError:
+    certifi = None
 
 # Allow running as either:
 # 1) python -m src.serve_gpt_rec
@@ -33,6 +40,8 @@ from src.model.gpt_decoder import GPTRecConfig, GPTRecModel
 class PredictRequest(BaseModel):
     history_artist_ids: list[str] = Field(default_factory=list)
     top_k: int = Field(default=10, ge=1, le=100)
+    include_attention: bool = False
+    attention_top_n: int = Field(default=5, ge=1, le=20)
 
 
 class ModelServer:
@@ -43,6 +52,8 @@ class ModelServer:
         self.artist_names = self._load_artist_names(self.data_dir)
         self.artist_images = self._load_artist_images(self.data_dir)
         self._musicbrainz_last_request_ts = 0.0
+        self._image_retry_seconds = 24 * 60 * 60
+        self._image_retry_seconds_transient = 5 * 60
         self.artist_ids = sorted(self.vocab.keys())
         self.model, self.model_cfg = self._load_model(checkpoint_path, self.device)
 
@@ -78,13 +89,30 @@ class ModelServer:
     def _artist_name(self, artist_id: str) -> str:
         return self.artist_names.get(artist_id, artist_id)
 
-    def _load_artist_images(self, data_dir: str) -> dict[str, str | None]:
+    def _load_artist_images(self, data_dir: str) -> dict[str, dict[str, Any]]:
         path = os.path.join(data_dir, "artist_images.json")
         if not os.path.exists(path):
             return {}
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        return {str(artist_id): (str(url) if url else None) for artist_id, url in raw.items()}
+
+        parsed: dict[str, dict[str, Any]] = {}
+        for artist_id, value in raw.items():
+            artist_id = str(artist_id)
+            if isinstance(value, dict):
+                parsed[artist_id] = {
+                    "url": str(value.get("url")) if value.get("url") else None,
+                    "last_checked": float(value.get("last_checked", 0.0)),
+                    "last_error": str(value.get("last_error")) if value.get("last_error") else None,
+                }
+                continue
+            # Backward compatibility for old flat format: {"artist_id": "url"|null}
+            parsed[artist_id] = {
+                "url": str(value) if value else None,
+                "last_checked": 0.0,
+                "last_error": None,
+            }
+        return parsed
 
     def _save_artist_images(self) -> None:
         path = os.path.join(self.data_dir, "artist_images.json")
@@ -103,7 +131,10 @@ class ModelServer:
                 "Accept": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        ssl_context = None
+        if certifi is not None:
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as resp:
             self._musicbrainz_last_request_ts = time.time()
             payload = resp.read().decode("utf-8")
         return json.loads(payload)
@@ -115,6 +146,10 @@ class ModelServer:
             url_info = rel.get("url", {})
             resource = url_info.get("resource")
             if rel_type == "image" and isinstance(resource, str):
+                # Some relations point to Wikimedia file pages; convert to a direct file path URL.
+                if "commons.wikimedia.org/wiki/File:" in resource:
+                    filename = resource.split("/wiki/File:", 1)[-1]
+                    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{urllib.parse.quote(filename)}"
                 return resource
 
         wikidata_url = None
@@ -172,21 +207,49 @@ class ModelServer:
         return self._extract_image_url_from_musicbrainz_artist(detail_payload)
 
     def _artist_image_url(self, artist_id: str, lazy: bool = True) -> str | None:
-        if artist_id in self.artist_images:
-            return self.artist_images[artist_id]
+        entry = self.artist_images.get(artist_id)
+        now = time.time()
+        if entry is not None:
+            if entry.get("url"):
+                return str(entry["url"])
+            # Retry misses periodically rather than caching null forever.
+            last_checked = float(entry.get("last_checked", 0.0))
+            last_error = str(entry.get("last_error") or "")
+            retry_seconds = self._image_retry_seconds
+            # Old TLS failures are stale after certifi fix; retry immediately.
+            if "CERTIFICATE_VERIFY_FAILED" in last_error:
+                retry_seconds = 0
+            # Treat 5xx upstream issues as transient.
+            if "HTTP Error 503" in last_error or "HTTP Error 429" in last_error:
+                retry_seconds = self._image_retry_seconds_transient
+            if not lazy or (now - last_checked) < retry_seconds:
+                return None
         if not lazy:
             return None
         artist_name = self._artist_name(artist_id)
         try:
             image_url = self._fetch_artist_image_from_musicbrainz(artist_name)
-        except Exception:
+            last_error = None
+        except Exception as exc:
+            print(f"[warn] artist image fetch failed for '{artist_name}' ({artist_id}): {exc}")
             image_url = None
-        self.artist_images[artist_id] = image_url
+            last_error = str(exc)
+        self.artist_images[artist_id] = {
+            "url": image_url,
+            "last_checked": now,
+            "last_error": last_error,
+        }
         self._save_artist_images()
         return image_url
 
     @torch.no_grad()
-    def predict(self, history_artist_ids: list[str], top_k: int) -> dict[str, Any]:
+    def predict(
+        self,
+        history_artist_ids: list[str],
+        top_k: int,
+        include_attention: bool = False,
+        attention_top_n: int = 5,
+    ) -> dict[str, Any]:
         known_tokens = [self.vocab[a] for a in history_artist_ids if a in self.vocab]
         unknown_artist_ids = [a for a in history_artist_ids if a not in self.vocab]
         if not known_tokens:
@@ -199,7 +262,15 @@ class ModelServer:
         input_ids = torch.tensor(known_tokens, dtype=torch.long, device=self.device).unsqueeze(0)
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
 
-        logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        attn_weights = None
+        if include_attention:
+            logits, attn_weights = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                return_last_attn=True,
+            )
+        else:
+            logits = self.model(input_ids=input_ids, attention_mask=attention_mask)
         next_logits = logits[0, -1].clone()
         next_logits[0] = float("-inf")  # never recommend PAD
         # Avoid echoing artists that are already in the user's provided history.
@@ -226,7 +297,7 @@ class ModelServer:
         used_artist_ids = [self.token_to_artist[t] for t in known_tokens if t in self.token_to_artist]
         used_artist_names = [self._artist_name(artist_id) for artist_id in used_artist_ids]
         used_artist_images = [self._artist_image_url(artist_id, lazy=True) for artist_id in used_artist_ids]
-        return {
+        response = {
             "history_used_artist_ids": used_artist_ids,
             "history_used_artist_names": used_artist_names,
             "history_used_artist_images": used_artist_images,
@@ -234,6 +305,43 @@ class ModelServer:
             "top_k": k,
             "predictions": predictions,
         }
+        if include_attention and attn_weights is not None:
+            # attn_weights: [batch, heads, target_len, source_len]
+            attn_last_query = attn_weights[0, :, -1, : len(used_artist_ids)]
+            mean_weights = attn_last_query.mean(dim=0)
+
+            per_head: list[dict[str, Any]] = []
+            for head_idx in range(attn_last_query.shape[0]):
+                w = attn_last_query[head_idx]
+                topn = min(attention_top_n, w.shape[0])
+                top_vals, top_pos = torch.topk(w, k=topn)
+                contributors: list[dict[str, Any]] = []
+                for pos, weight in zip(top_pos.tolist(), top_vals.tolist(), strict=False):
+                    contributors.append(
+                        {
+                            "position": int(pos),
+                            "artist_id": used_artist_ids[pos],
+                            "artist_name": used_artist_names[pos],
+                            "weight": float(weight),
+                        }
+                    )
+                per_head.append(
+                    {
+                        "head_index": int(head_idx),
+                        "weights": [float(x) for x in w.tolist()],
+                        "top_contributors": contributors,
+                    }
+                )
+
+            response["attention"] = {
+                "num_heads": int(attn_last_query.shape[0]),
+                "seq_len": int(attn_last_query.shape[1]),
+                "history_artist_ids": used_artist_ids,
+                "history_artist_names": used_artist_names,
+                "mean_weights": [float(x) for x in mean_weights.tolist()],
+                "per_head": per_head,
+            }
+        return response
 
     def search_artists(self, query: str, limit: int) -> list[dict[str, Any]]:
         q = query.strip().lower()
@@ -307,7 +415,12 @@ def build_app(server: ModelServer, web_dir: str) -> FastAPI:
 
     @app.post("/predict")
     def predict(req: PredictRequest) -> dict[str, Any]:
-        return server.predict(history_artist_ids=req.history_artist_ids, top_k=req.top_k)
+        return server.predict(
+            history_artist_ids=req.history_artist_ids,
+            top_k=req.top_k,
+            include_attention=req.include_attention,
+            attention_top_n=req.attention_top_n,
+        )
 
     @app.get("/artist_media")
     def artist_media(artist_id: str = Query(..., description="Artist id")) -> dict[str, Any]:
@@ -318,6 +431,16 @@ def build_app(server: ModelServer, web_dir: str) -> FastAPI:
             "artist_name": server._artist_name(artist_id),
             "artist_image_url": server._artist_image_url(artist_id, lazy=True),
         }
+
+    @app.middleware("http")
+    async def disable_static_caching(request, call_next):
+        response: Response = await call_next(request)
+        path = request.url.path
+        if path in ("/", "/index.html") or path.endswith(".js") or path.endswith(".css"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     if os.path.isdir(web_dir):
         app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")

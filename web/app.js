@@ -11,6 +11,8 @@ let selectedArtists = [];
 let searchDebounce = null;
 const imageCache = new Map();
 const imageInFlight = new Set();
+const imageRetryAfterMs = 30000;
+const imageLastRetryTs = new Map();
 
 function avatarHtml(url, label) {
   if (url) {
@@ -21,9 +23,13 @@ function avatarHtml(url, label) {
 
 async function ensureArtistImage(artistId) {
   if (!artistId || imageInFlight.has(artistId)) return;
-  if (imageCache.has(artistId) && imageCache.get(artistId) !== undefined) return;
+  const cached = imageCache.get(artistId);
+  if (cached) return; // already have a real URL
+  const now = Date.now();
+  if ((imageLastRetryTs.get(artistId) || 0) + imageRetryAfterMs > now) return;
 
   imageInFlight.add(artistId);
+  imageLastRetryTs.set(artistId, now);
   try {
     const res = await fetch(`/artist_media?artist_id=${encodeURIComponent(artistId)}`);
     if (!res.ok) return;

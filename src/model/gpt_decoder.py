@@ -38,7 +38,12 @@ class TransformerBlock(nn.Module):
             nn.Dropout(cfg.dropout),
         )
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        return_attn: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         t = x.size(1)
         causal_mask = torch.triu(
             torch.ones((t, t), device=x.device, dtype=torch.bool),
@@ -49,16 +54,21 @@ class TransformerBlock(nn.Module):
             key_padding_mask = ~attention_mask.bool()
 
         h = self.ln_1(x)
-        h, _ = self.attn(
+        h, attn_weights = self.attn(
             h,
             h,
             h,
             attn_mask=causal_mask,
             key_padding_mask=key_padding_mask,
-            need_weights=False,
+            need_weights=return_attn,
+            average_attn_weights=False,
         )
         x = x + self.dropout_1(h)
         x = x + self.mlp(self.ln_2(x))
+        if return_attn:
+            if attn_weights is None:
+                raise RuntimeError("Attention weights requested but unavailable.")
+            return x, attn_weights
         return x
 
 
@@ -82,7 +92,12 @@ class GPTRecModel(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        return_last_attn: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         batch, seq_len = input_ids.shape
         if seq_len > self.cfg.max_seq_len:
             raise ValueError(f"Sequence length {seq_len} exceeds max_seq_len={self.cfg.max_seq_len}")
@@ -91,8 +106,17 @@ class GPTRecModel(nn.Module):
         x = self.token_emb(input_ids) + self.pos_emb(positions)
         x = self.dropout(x)
 
-        for block in self.blocks:
-            x = block(x, attention_mask=attention_mask)
+        last_attn = None
+        for i, block in enumerate(self.blocks):
+            if return_last_attn and i == len(self.blocks) - 1:
+                x, last_attn = block(x, attention_mask=attention_mask, return_attn=True)
+            else:
+                x = block(x, attention_mask=attention_mask)
 
         x = self.ln_f(x)
-        return self.lm_head(x)
+        logits = self.lm_head(x)
+        if return_last_attn:
+            if last_attn is None:
+                raise RuntimeError("Last-layer attention requested but not collected.")
+            return logits, last_attn
+        return logits

@@ -3,3 +3,4 @@ numpy
 fastapi
 uvicorn
 pydantic
+certifi
