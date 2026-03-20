@@ -21,6 +21,7 @@
           <input id="top-k" type="number" min="1" max="100" value="10" />
           <button id="predict-btn">Predict Next Artist</button>
           <button id="clear-btn" class="secondary">Clear History</button>
+          <label><input id="show-attention" type="checkbox" /> Show attention</label>
         </div>
       </section>
 
@@ -43,6 +44,11 @@
           </thead>
           <tbody id="predictions-body"></tbody>
         </table>
+      </section>
+
+      <section class="panel" id="attention-panel" hidden>
+        <h2>Attention (Last Layer)</h2>
+        <div id="attention-content"></div>
       </section>
 
     </main>

@@ -129,6 +129,43 @@ button.secondary {
   margin-bottom: 8px;
 }
 
+.attention-legend {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+
+.attention-heatmap {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.attention-heatmap th,
+.attention-heatmap td {
+  border: 1px solid #2a3344;
+  padding: 6px;
+  text-align: center;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-heatmap thead th {
+  background: #151b26;
+}
+
+.attention-heatmap tbody th {
+  background: #1b2230;
+  width: 84px;
+}
+
+.attention-cell {
+  color: #1b1b1b;
+  font-weight: 600;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
