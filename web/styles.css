@@ -129,6 +129,33 @@ button.secondary {
   margin-bottom: 8px;
 }
 
+/* Loading bar shown while /predict is in flight */
+.predict-loading {
+  margin-top: 10px;
+  height: 4px;
+  border-radius: 2px;
+  background: #2a3344;
+  overflow: hidden;
+}
+
+.predict-loading-bar {
+  height: 100%;
+  width: 40%;
+  border-radius: 2px;
+  background: #4d7cff;
+  animation: predict-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes predict-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .attention-legend {
   font-size: 12px;
   opacity: 0.85;

@@ -9,9 +9,11 @@ const unknownWarning = document.getElementById('unknown-warning');
 const showAttentionInput = document.getElementById('show-attention');
 const attentionPanel = document.getElementById('attention-panel');
 const attentionContent = document.getElementById('attention-content');
+const predictLoading = document.getElementById('predict-loading');
 
 let selectedArtists = [];
 let searchDebounce = null;
+let isPredicting = false;
 const imageCache = new Map();
 const imageInFlight = new Set();
 const imageRetryAfterMs = 30000;
@@ -232,64 +234,77 @@ searchInput.addEventListener('input', () => {
   }, 150);
 });
 
+function setLoadingState(loading) {
+  isPredicting = loading;
+  predictBtn.disabled = loading;
+  predictLoading.hidden = !loading;
+}
+
 predictBtn.addEventListener('click', async () => {
+  if (isPredicting) return;
+
   predictionsBody.innerHTML = '';
   unknownWarning.textContent = '';
+  setLoadingState(true);
 
-  const topK = Number(topKInput.value || 10);
-  const payload = {
-    history_artist_ids: selectedArtists.map((a) => a.artist_id),
-    top_k: topK,
-    include_attention: showAttentionInput.checked,
-    attention_top_n: 5,
-  };
+  try {
+    const topK = Number(topKInput.value || 10);
+    const payload = {
+      history_artist_ids: selectedArtists.map((a) => a.artist_id),
+      top_k: topK,
+      include_attention: showAttentionInput.checked,
+      attention_top_n: 5,
+    };
 
-  const res = await fetch('/predict', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    unknownWarning.textContent = data.detail || 'Prediction failed';
-    return;
-  }
-
-  if (data.unknown_artist_ids && data.unknown_artist_ids.length > 0) {
-    unknownWarning.textContent = 'Some unrecognized artists were ignored.';
-  }
-
-  if (data.history_used_artist_ids && data.history_used_artist_names) {
-    selectedArtists = data.history_used_artist_ids.map((artistId, i) => ({
-      artist_id: artistId,
-      artist_name: data.history_used_artist_names[i] || artistId,
-      artist_image_url: (data.history_used_artist_images || [])[i] || null,
-    }));
-    selectedArtists.forEach((artist) => {
-      if (artist.artist_image_url !== undefined) {
-        imageCache.set(artist.artist_id, artist.artist_image_url);
-      }
+    const res = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
-    updateUrlFromState();
-    renderHistory();
-  }
 
-  data.predictions.forEach((p, idx) => {
-    const tr = document.createElement('tr');
-    const imageUrl = p.artist_image_url ?? imageCache.get(p.artist_id) ?? null;
-    if (p.artist_image_url !== undefined) {
-      imageCache.set(p.artist_id, p.artist_image_url);
+    const data = await res.json();
+    if (!res.ok) {
+      unknownWarning.textContent = data.detail || 'Prediction failed';
+      return;
     }
-    tr.innerHTML = `
-      <td>${idx + 1}</td>
-      <td><span class="artist-cell">${avatarHtml(imageUrl, p.artist_name)}<span>${p.artist_name}</span></span></td>
-      <td>${p.prob.toFixed(6)}</td>
-      <td>${p.logit.toFixed(4)}</td>
-    `;
-    predictionsBody.appendChild(tr);
-  });
-  renderAttention(data.attention);
+
+    if (data.unknown_artist_ids && data.unknown_artist_ids.length > 0) {
+      unknownWarning.textContent = 'Some unrecognized artists were ignored.';
+    }
+
+    if (data.history_used_artist_ids && data.history_used_artist_names) {
+      selectedArtists = data.history_used_artist_ids.map((artistId, i) => ({
+        artist_id: artistId,
+        artist_name: data.history_used_artist_names[i] || artistId,
+        artist_image_url: (data.history_used_artist_images || [])[i] || null,
+      }));
+      selectedArtists.forEach((artist) => {
+        if (artist.artist_image_url !== undefined) {
+          imageCache.set(artist.artist_id, artist.artist_image_url);
+        }
+      });
+      updateUrlFromState();
+      renderHistory();
+    }
+
+    data.predictions.forEach((p, idx) => {
+      const tr = document.createElement('tr');
+      const imageUrl = p.artist_image_url ?? imageCache.get(p.artist_id) ?? null;
+      if (p.artist_image_url !== undefined) {
+        imageCache.set(p.artist_id, p.artist_image_url);
+      }
+      tr.innerHTML = `
+        <td>${idx + 1}</td>
+        <td><span class="artist-cell">${avatarHtml(imageUrl, p.artist_name)}<span>${p.artist_name}</span></span></td>
+        <td>${p.prob.toFixed(6)}</td>
+        <td>${p.logit.toFixed(4)}</td>
+      `;
+      predictionsBody.appendChild(tr);
+    });
+    renderAttention(data.attention);
+  } finally {
+    setLoadingState(false);
+  }
 });
 
 clearBtn.addEventListener('click', () => {
